@@ -10,11 +10,16 @@ import os
 from django.contrib.auth.forms import UserCreationForm
 from django.contrib.sites.models import Site
 from django.contrib.auth.models import User
+from django.template import Context, loader
 from django.conf import settings
 from django.db import models
 
 from gruntle.memebot.fields import SerializedDataField, PickleField, AttributeManager, KeyValueManager
+from gruntle.memebot.utils import blacklist, first, get_domain_from_url
+from gruntle.memebot.utils.tzdatetime import tzdatetime
 from gruntle.memebot.exceptions import OldMeme
+
+current_site = Site.objects.get_current()
 
 class Model(models.Model):
 
@@ -24,10 +29,6 @@ class Model(models.Model):
     created = models.DateTimeField(null=False, blank=False, auto_now_add=True)
     modified = models.DateTimeField(null=False, blank=False, auto_now=True)
 
-    # for generating GUIDs
-    _guid_fmt = 'tag:%(domain)s,%(date)s:/%(app)s/%(model)s/%(id)d/%(timestamp)s'
-    _guid_id_fields = 'publish_id', 'external_id', 'id'
-
     class Meta:
 
         abstract = True
@@ -35,21 +36,12 @@ class Model(models.Model):
     @property
     def guid(self):
         """Global unique identifier for this object"""
-        site = Site.objects.get_current()
-        model = type(self)
-        for field in model._guid_id_fields:
-            external_id = getattr(self, field, None)
-            if external_id is not None:
-                break
-        else:
-            raise TypeError('No suitable ID found for GUID creation')
-        return model._guid_fmt % {
-                'domain': site.domain,
-                'date': self.created.strftime('%Y-%m-%d'),
-                'app': model._meta.app_label,
-                'model': model._meta.object_name.lower(),
-                'id': external_id,
-                'timestamp': self.created.strftime('%Y%m%d%H%M%S')}
+        id = first([getattr(self, key, None) for key in ('publish_id', 'external_id', 'id')])
+        date = first([getattr(self, key, None) for key in ('published', 'activation_date', 'created', 'modified')])
+        date = tzdatetime.new(date).utc
+        meta = type(self)._meta
+        return 'tag:%s,%s:/%s/%s/%d/%d' % (current_site.domain, date.strftime('%Y-%m-%d'), meta.app_label,
+                                           meta.object_name.lower(), id, date.unixtime)
 
 
 class Source(Model):
@@ -78,12 +70,20 @@ class LinkManager(models.Manager):
 
     fragment_re = re.compile(r'^(.*)#([^;/?:@=&]*)$')
 
-    @property
-    def last_publish_id(self):
+    def get_last_published(self):
+        published = self.filter(published__isnull=False).only('published').order_by('-published')
+        if published.count():
+            return published[0].published
+
+    last_published = property(get_last_published)
+
+    def get_last_publish_id(self):
         published = self.filter(publish_id__isnull=False).only('publish_id').order_by('-publish_id')
         if published.count():
             return published[0].publish_id
         return 0
+
+    last_publish_id = property(get_last_publish_id)
 
     def add_link(self, url, username, source_name, source_type, **kwargs):
         """
@@ -93,6 +93,9 @@ class LinkManager(models.Manager):
         if a normalized version of this URL has been posted previously,
         otherwise returns the new Link.
         """
+        # try this first
+        blacklist.check(url)
+
         username = username.lower()
         user = Alias.objects.get_user(username)
         if user is None:
@@ -183,6 +186,7 @@ class Link(Model):
 
     # state of current link life-cycle
     LINK_STATES = [('new', 'New'),
+                   ('disabled', 'Disabled'),
                    ('invalid', 'Invalid'),
                    ('published', 'Published')]
 
@@ -228,6 +232,19 @@ class Link(Model):
             except (ImportError, AttributeError):
                 pass
 
+    def get_best_url(self):
+        """The URL you should actually use, prefers final redirection page, if it exists"""
+        return first(self.resolved_url, self.url)
+
+    best_url = property(get_best_url)
+
+    def get_title_display(self):
+        """Rendered title"""
+        url = self.get_best_url()
+        if self.title is None:
+            return url
+        return u'[%s] %s' % (get_domain_from_url(url), self.title)
+
     @property
     def rss_template(self):
         """The scanner-defined template used to render this link in RSS"""
@@ -237,26 +254,25 @@ class Link(Model):
     def get_absolute_url(self):
         """URL to this links cached content"""
         if self.state == 'published' and self.content is not None:
-            return ('content', [self.publish_id])
+            return ('memebot-view-link-content', [self.publish_id])
 
     absolute_url = property(get_absolute_url)
 
-    @models.permalink
-    def get_rss_url(self):
-        """URL to this links RSS item"""
-        if self.state == 'published':
-            return ('view-rss', [self.publish_id])
+    @property
+    def external_url(self):
+        return urlparse.urljoin(settings.FEED_BASE_URL, self.absolute_url)
 
-    rss_url = property(get_rss_url)
-
-    def publish(self, commit=True):
+    def publish(self, date=None, commit=True):
         """Publish this link"""
         dirty = False
         if self.state != 'published':
             self.state = 'published'
             dirty = True
         if self.published is None:
-            self.published = datetime.datetime.now()
+            if date is None:
+                last = Link.objects.get_last_published()
+                date = self.created if (last is None or self.created >= last) else last
+            self.published = date
             dirty = True
         if self.publish_id is None:
             self.publish_id = Link.objects.last_publish_id + 1
@@ -265,6 +281,12 @@ class Link(Model):
             self.save()
             dirty = False
         return dirty
+
+    def render(self):
+        if self.state == 'published':
+            return loader.get_template(self.rss_template).render(Context({'link': self}))
+
+    rendered = property(render)
 
 
 class Note(Model):

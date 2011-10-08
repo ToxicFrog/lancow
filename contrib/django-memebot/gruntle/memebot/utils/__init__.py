@@ -2,10 +2,13 @@
 
 import functools
 import traceback
+import urlparse
 import datetime
 import binascii
 import tempfile
 import logging
+import decimal
+import rfc822
 import socket
 import shutil
 import errno
@@ -122,6 +125,26 @@ class AtomicWrite(object):
         self.reset()
 
 
+class Serializable(object):
+
+    def __key__(self):
+        return make_unique_key(self.__dict__)
+
+    def __hash__(self):
+        return hash(self.__key__())
+
+    def __eq__(self, other):
+        if not isinstance(other, Serializable):
+            return NotImplemented
+        return hash(self) == hash(other)
+
+    def __ne__(self, other):
+        equals = self.__eq__(other)
+        if equals is NotImplemented:
+            return equals
+        return not equals
+
+
 def ipython():
     """
     Embed IPython in running program. This does a few non-standard things:
@@ -213,8 +236,8 @@ def get_logger(name, level=None, stream=None, append=False, dir=None,
         @property
         def prefix(self):
             if self.name:
-                return text.encode(text.format('[%s] ', self.name))
-            return ''
+                return text.decode(text.format('[%s] ', self.name))
+            return u''
 
         def __getattribute__(self, key):
             try:
@@ -226,10 +249,11 @@ def get_logger(name, level=None, stream=None, append=False, dir=None,
                     @functools.wraps(wrapped_func)
                     def wrapper_func(*args, **kwargs):
                         exc_info = kwargs.pop('exc_info', None)
-                        wrapped_func(self.prefix + text.encode(text.format(*args, **kwargs)))
+                        output = self.prefix + text.decode(text.format(*args, **kwargs))
+                        wrapped_func(output)
                         if exc_info is not None:
                             for line in traceback.format_exception(*exc_info):
-                                wrapped_func(self.prefix + text.chomp(text.encode(line)))
+                                wrapped_func(self.prefix + text.chomp(text.decode(line)))
 
                     return wrapper_func
                 else:
@@ -238,6 +262,9 @@ def get_logger(name, level=None, stream=None, append=False, dir=None,
         def get_named_logger(self, name):
             """Return named interface to this logger"""
             return type(self)(name)
+
+        def __repr__(self):
+            return '<Logger: %s%s>' % (name, ' (%s)' % self.name if self.name else '')
 
     return LogWrapper()
 
@@ -251,13 +278,125 @@ def first(*args):
             return arg
 
 
-def local_to_gmt(dt=None):
-    """Convert a datetime object in localtime to gmt time.. stupidest shit ever"""
-    if dt is None:
-        dt = datetime.datetime.now()
-    return datetime.datetime.fromtimestamp(time.mktime(time.gmtime(time.mktime(dt.timetuple()))))
-
-
 def get_domain():
     """Determine the domain portion of our name"""
     return re.sub('^' + re.escape('.'.join(socket.gethostname().split('.') + [''])), '', socket.getfqdn())
+
+
+def get_domain_from_url(url):
+    """Return normalized domain portion of the URL"""
+    from gruntle.memebot.utils import text
+    items = text.decode(urlparse.urlparse(url).netloc).lower().rsplit(u':', 1)[0].split(u'.')[-2:]
+    return text.encode(u'.'.join(item for item in (item.strip() for item in items) if item))
+
+
+def make_unique_key(object):
+    """Try to hash any object, coercing type as necessary"""
+    try:
+        return hash(object)
+    except TypeError:
+        name = type(object).__name__
+        if isinstance(object, dict):
+            object = sorted(object.iteritems(), key=lambda item: item[0])
+        elif isinstance(object, set):
+            object = sorted(object)
+        return hash((name, tuple(make_unique_key(item) for item in object)))
+
+
+def flatten(*args, **kwargs):
+    """Flattens arbitrary arguments to a single sequence"""
+    return _flatten((args, kwargs))
+
+
+def _flatten(items):
+    """Internal to flatten()"""
+    flat = []
+    for item in items:
+        if isinstance(item, dict):
+            item = sorted(item.iteritems(), key=lambda item: item[0])
+        elif isinstance(item, set):
+            item = sorted(item)
+        if isinstance(item, (tuple, list)):
+            flat.extend(_flatten(item))
+        else:
+            flat.append(item)
+    return flat
+
+
+def iso8061time(dt=None, utc=False):
+    """Format local datetime as W3CDTF/iso8061/rfc3339 (2011-10-05T15:04:33+07:00 or 2011-10-05T22:04:33Z)"""
+    if dt is None:
+        dt = datetime.datetime.now()
+    u = datetime.datetime.utcfromtimestamp(time.mktime(dt.timetuple()))
+    if utc:
+        dt, z = u, 'Z'
+    else:
+        o = (u - dt.replace(microsecond=0)).total_seconds()
+        s, f = ('-', -1) if (o < 0) else ('+', 1)
+        z = s + '%02d:%02d' % divmod(o * f / 60, 60)
+    return dt.isoformat().split('.', 1)[0] + z
+
+
+def rfc822time(dt=None):
+    """Format local datetime as rfc822 (Wed, 05 Oct 2011 22:04:33 GMT)"""
+    if dt is None:
+        dt = datetime.datetime.now()
+    return rfc822.formatdate(time.mktime(dt.timetuple()))
+
+
+def human_readable_duration(duration, precision=None):
+    """
+    Return human readable version of supplied duration. It may be a
+    number type, indicating seconds elapsed, a timedelta object
+    interpreted the same, or a date or datetime object, which will
+    return the duration between then and now.
+
+    Stting precision allows you to truncate how many units it will use
+    to express the duration. For example, when using precision=2,  "40
+    years, 9 months, 32 days, 7 hours, 16 minutes, and 44 seconds" would
+    instead read "40 years and 9 months".
+    """
+    if isinstance(duration, datetime.date):
+        now = datetime.datetime.now()
+        if type(duration) is datetime.date:
+            now = now.date()
+        duration -= now
+    if isinstance(duration, datetime.timedelta):
+        duration = duration.total_seconds()
+    duration = int(round(duration, 0))
+    if duration < 0:
+        duration *= -1
+
+    parts = []
+    for size, unit in ((60, 'second'),
+                       (60, 'minute'),
+                       (24, 'hour'),
+                       (7, 'day'),
+                       (4, 'week'),
+                       (12, 'month'),
+                       (None, 'year')):
+
+        if size is None:
+            parts.append((duration, unit))
+        else:
+            duration, r = divmod(duration, size)
+            if r:
+                parts.append((r, unit))
+            if not duration:
+                break
+
+    if parts:
+        parts = [plural(*part) for part in reversed(parts)]
+        if precision is not None:
+            parts = parts[:precision]
+        hold = parts.pop()
+        result = [', '.join(parts)]
+        if len(parts) > 1:
+            result.append(',')
+        if parts:
+            result.append(' and ')
+        result.append(hold)
+        result = ''.join(result)
+    else:
+        result = 'less than 1 second'
+    return result

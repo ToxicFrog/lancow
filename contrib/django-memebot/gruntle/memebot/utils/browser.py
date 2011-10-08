@@ -33,6 +33,8 @@ from gruntle.memebot.utils import text
 
 __all__ = ['Browser', 'decode_entities', 'render_node']
 
+DEFAULT_MAX_REDIRECTS = 10
+
 # some user agents to choose from, for convenience
 PRESET_USER_AGENTS = {'ie6': 'Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1)',
                       'ie7': 'Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0)',
@@ -54,10 +56,13 @@ PRESET_USER_AGENTS = {'ie6': 'Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1)
 
 # some gloriously naive regular expressions for stripping html, quick & dirty
 html_tag_re = re.compile(r'<.*?>', re.DOTALL)  # <-- horrible
+lang_tag_re = re.compile(r'<(script|style)[^>]*>.*?</\1>', re.IGNORECASE | re.DOTALL)
+comment_re = re.compile(r'<!--.*?-->', re.DOTALL)
 whitespace_re = re.compile(r'\s+')  # for packing whitespace
 entity_dec_re = re.compile(r'(&#(\d+);)')  # &#32;
 entity_hex_re = re.compile(r'^(&#x([0-9a-fA-F]+);)')  # &#x3D;
 entity_name_re = re.compile(r'(&(%s);)' % '|'.join(map(re.escape, htmlentitydefs.name2codepoint)))  # &amp;
+meta_refresh_re = re.compile(r'^refresh$', re.IGNORECASE)
 
 class Response(collections.namedtuple('Response', 'code msg url real_url data_type main_type sub_type data complete')):
 
@@ -73,18 +78,35 @@ class Response(collections.namedtuple('Response', 'code msg url real_url data_ty
     def content_type(self):
         return '%s/%s' % (self.main_type, self.sub_type)
 
+    @property
+    def meta_redirect(self):
+        if self.data_type == 'soup':
+            with trapped:
+                for param in self.data.head.find('meta', {'http-equiv': meta_refresh_re})['content'].split(';'):
+                    if param.startswith(u'url='):
+                        return param[4:]
+
+    def __str__(self):
+        return text.encode(', '.join(text.format('%s=%r', key, getattr(self, key, None))
+                                     for key in self._fields if key != 'data'))
+
+    def __repr__(self):
+        return text.format('<%s: %s>', type(self).__name__, self.__str__())
+
 
 class Browser(object):
 
     """Represents a configured browser"""
 
     def __init__(self, handlers=None, headers=None, user_agent='urllib2', support_cookies=True,
-                 support_gzip=True, add_accept_headers=True, keepalive=True, timeout=None):
+                 support_gzip=True, add_accept_headers=True, keepalive=True, timeout=None, max_redirects=None):
 
         if handlers is None:
             handlers = []
         if headers is None:
             headers = []
+        if max_redirects is None:
+            max_redirects = DEFAULT_MAX_REDIRECTS
 
         # add cookie processor to handlers if we want cookie support
         if support_cookies:
@@ -111,6 +133,7 @@ class Browser(object):
             headers.append(('Connection', 'keep-alive'))
 
         # build the opener
+        self.max_redirects = max_redirects
         self.timeout = timeout
         self.opener = urllib2.build_opener(*handlers)
         self.opener.addheaders = self.headers = headers
@@ -121,9 +144,36 @@ class Browser(object):
             self.xml_parser = etree.XMLParser(encoding=text.get_encoding(), ns_clean=True,
                                               recover=True, remove_blank_text=True, strip_cdata=False)
 
-    def open(self, url, data=None, referer=None, max_read=None):
+    def open(self, url, data=None, referer=None, max_read=None, follow_meta_redirect=False):
         """Opens the requested URL"""
-        request = urllib2.Request(url, data)
+        followed = set()
+        orig_url = url
+        response = None
+        while True:
+            try:
+                with TrapErrors():
+                    response = self._open(url, data, referer, max_read)
+            except TrapError, exc:
+                # exception on first attempt, just raise it, we got nothing useful
+                if response is None:
+                    reraise(*exc.args)
+                # otherwise, this was probably an error from meta redirect, we can keep the earlier response
+                #import traceback
+                #traceback.print_exception(*exc.args)
+                break
+            if not follow_meta_redirect:
+                break
+            redirect = response.meta_redirect
+            if redirect is None or redirect in followed:
+                break
+            followed.add(redirect)
+            if len(followed) > self.max_redirects:
+                break
+            url = redirect
+        return response
+
+    def _open(self, url, data=None, referer=None, max_read=None):
+        request = urllib2.Request(text.encode(url), data)
         if referer is not None:
             request.add_header('Referer', referer)
         try:
@@ -134,11 +184,20 @@ class Browser(object):
             max_read = -1
         data = response.read(max_read)
         read = len(data)
+
+        length = response.headers.get('content-length')
+        if length is not None:
+            length = int(length)
+            complete = read >= int(length)
+        else:
+            complete = (max_read == -1) or (read < max_read)
+
         if response.headers.get('content-encoding') == 'gzip':
             data = gzip.GzipFile(fileobj=stringio.StringIO(data), mode='r').read()
         if response.headers.maintype == 'text':
             data = text.decode(data, response.headers.getparam('charset'))
             data_type = 'text'
+
         if response.headers.subtype == 'html' and BeautifulSoup is not None:
             try:
                 with TrapErrors():
@@ -161,20 +220,21 @@ class Browser(object):
                 with TrapErrors():
                     fileobj = stringio.StringIO(data)
                     data = Image.open(fileobj)
+                    data.load()
                     data_type = 'image'
             except TrapError:
                 data_type = 'broken_image'
 
         return Response(code=response.code, msg=response.msg, url=url, real_url=response.url, data_type=data_type,
                         main_type=response.headers.maintype, sub_type=response.headers.subtype, data=data,
-                        complete=((max_read == -1) or (read < max_read)))
+                        complete=complete)
 
 
 def decode_entities(html):
     """Convert HTML entity-encoded characters back to bytes"""
-    for a in ((x, chr(int(v))) for x, v in entity_dec_re.findall(html)):
+    for a in ((x, unichr(int(v))) for x, v in entity_dec_re.findall(html)):
         html = html.replace(*a)
-    for a in ((x, chr(htmlentitydefs.name2codepoint[name])) for x, name in entity_name_re.findall(html)):
+    for a in ((x, unichr(htmlentitydefs.name2codepoint[name])) for x, name in entity_name_re.findall(html)):
         html = html.replace(*a)
     for a in ((x, unichr(int(v, 16))) for x, v in entity_hex_re.findall(html)):
         html = html.replace(*a)
@@ -183,5 +243,31 @@ def decode_entities(html):
 
 def render_node(node):
     """Try to turn a soup node into something resembling plain text"""
-    html = text.encode(node if isinstance(node, (str, unicode)) else node.renderContents())
-    return text.decode(decode_entities(whitespace_re.sub(' ', html_tag_re.sub(' ', html).strip())))
+    if isinstance(node, (str, unicode)):
+        html = node
+    else:
+        html = node.renderContents()
+    html = text.decode(html)
+    html = html_tag_re.sub(u' ', html)
+    html = decode_entities(html)
+    html = html.replace(u'\u00a0', ' ')
+    html = whitespace_re.sub(u' ', html)
+    html = html.strip()
+    return html
+
+
+def prettify_node(node):
+    """Try to turn a soup node into something resembling readable html"""
+    if isinstance(node, (str, unicode)):
+        html = node
+    else:
+        html = node.prettify()
+    html = text.decode(html)
+    html = lang_tag_re.sub(u' ', html)
+    html = comment_re.sub(u' ', html)
+    html = html.strip()
+    lines = html.splitlines()
+    lines = (line.rstrip() for line in lines)
+    lines = (line for line in lines if line)
+    html = u'\n'.join(lines) + u'\n'
+    return text.encode(html)
