@@ -95,6 +95,7 @@ class Factoids(object):
     _get_verb = re.compile(r'^.*?(is|are)\s+(?:(an?|the)\s+)?(.+)\s*$')
     _results = re.compile(r'\s*\|\s*')
     _isreply = re.compile(r'^\s*<reply>\s*', I)
+    _isaction = re.compile(r'^\s*<action>\s*', I)
     _reply_formats = (
         u'KEY is RESULT',
         u'i think KEY is RESULT',
@@ -297,8 +298,13 @@ class Factoids(object):
             if literal:
                 return u'%s: %s =%s= %s' % (nick, key, verb, result)
             result = random.choice(self._results.split(result))
-            result, short = self._isreply.subn(u'', result)
-            if not short:
+            shortresult, short = self._isreply.subn(u'', result)
+            actionresult, action = self._isaction.subn(u'', result)
+            if short:
+                result = shortresult.replace(u'\\n', u'\n') # multiline messages for <reply> only
+            elif action:
+                result = u'\x01ACTION ' + actionresult.strip() + u'\x01'
+            else:
                 if verb == u'is':
                     format = random.choice(self._reply_formats)
                     format = format.replace(u'KEY', key)
@@ -306,8 +312,6 @@ class Factoids(object):
                     result = format
                 else:
                     result = u'%s %s %s' % (key, verb, result)
-            else:
-                result = result.replace('\\n', '\n') # multiline messages for <reply> only
             result = result.replace(u'$who', nick)
             result = result.strip()
 
