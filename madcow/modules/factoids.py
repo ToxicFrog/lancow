@@ -306,6 +306,8 @@ class Factoids(object):
                     result = format
                 else:
                     result = u'%s %s %s' % (key, verb, result)
+            else:
+                result = result.replace('\\n', '\n') # multiline messages for <reply> only
             result = result.replace(u'$who', nick)
             result = result.strip()
 
@@ -326,7 +328,7 @@ class Factoids(object):
         if result and tell_obj:
             result = u'%s wants you to know: %s' % (nick, result)
             req.sendto = target
-
+        
         return result
 
     def do_statement(self, message, nick, req):
