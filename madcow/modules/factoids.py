@@ -303,7 +303,7 @@ class Factoids(object):
             if short:
                 result = shortresult.replace(u'\\n', u'\n') # multiline messages for <reply> only
             elif action:
-                result = u'\x01ACTION ' + actionresult.strip() + u'\x01'
+                result = u'\x01ACTION %s\x01' % actionresult.strip()
             else:
                 if verb == u'is':
                     format = random.choice(self._reply_formats)
@@ -330,7 +330,10 @@ class Factoids(object):
 
         # modify output parameters for tells
         if result and tell_obj:
-            result = u'%s wants you to know: %s' % (nick, result)
+            if action:
+                result = re.compile('\x01$').sub(' (courtesy of %s)\x01' % nick, result)
+            else:
+                result = u'%s wants you to know: %s' % (nick, result)
             req.sendto = target
         
         return result
