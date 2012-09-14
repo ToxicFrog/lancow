@@ -38,6 +38,36 @@ WIKIS = {'wikipedia': {
                  'error': 'Search results',
                  },
              },
+         'starcraftwiki': {
+             'keys': ['scw'],
+             'baseurl': 'http://starcraft.wikia.com/',
+             'kwargs': {
+                 'random': '/wiki/Special:Random',
+                 'search': '/wiki/Special:Search',
+                 'advert': ' - StarCraft and StarCraft II Wiki',
+                 'error': 'Search results',
+                 },
+             },
+         'monsterhunterwiki': {
+             'keys': ['mhw'],
+             'baseurl': 'http://monsterhunter.wikia.com/',
+             'kwargs': {
+                 'random': '/wiki/Special:Random',
+                 'search': '/wiki/Special:Search',
+                 'advert': ' - The Monster Hunter Wiki.*',
+                 'error': 'Search results',
+                 },
+             },
+         'zeldawiki': {
+             'keys': ['zw'],
+             'baseurl': 'http://www.zeldawiki.org/',
+             'kwargs': {
+                 'random': '/Special:Random',
+                 'search': '/Special:Search',
+                 'advert': ' - Zelda Wiki',
+                 'error': 'Search results',
+                 },
+             },
          }
 
 class WikiMedia(object):
