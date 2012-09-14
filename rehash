@@ -1,0 +1,5 @@
+#!/bin/bash
+
+[[ -f ~/.madcow/madcow.pid ]] || { echo "Bot isn't running."; exit 0; }
+
+kill -HUP $(cat ~/.madcow/madcow.pid)
