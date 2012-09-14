@@ -90,6 +90,7 @@ class WikiMedia(object):
                 break
             summary += ' ' + sentence
         return summary
+        # return u'[%s%s] %s' % (self.baseurl, title, summary)
 
     def _getpage(self, url, opts=None):
         page = geturl(url, referer=self.baseurl, opts=opts)
@@ -100,8 +101,8 @@ class WikiMedia(object):
 
         # get page title
         title = soup.title.string
-        if self.advert and self.advert in title:
-            title = title.replace(self.advert, '')
+        if self.advert:
+            title = re.sub(self.advert, '', title)
 
         # remove all tabular data/sidebars
         for table in soup.findAll('table'):
