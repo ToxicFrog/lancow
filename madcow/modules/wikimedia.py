@@ -38,6 +38,46 @@ WIKIS = {'wikipedia': {
                  'error': 'Search results',
                  },
              },
+         'chronotriggerwiki': {
+             'keys': ['ctw'],
+             'baseurl': 'http://chrono.wikia.com/',
+             'kwargs': {
+                 'random': '/wiki/Special:Random',
+                 'search': '/wiki/Special:Search',
+                 'advert': ' - .*',
+                 'error': 'Search results',
+                 },
+             },
+         'megamanwiki': {
+             'keys': ['mmw'],
+             'baseurl': 'http://megaman.wikia.com/',
+             'kwargs': {
+                 'random': '/wiki/Special:Random',
+                 'search': '/wiki/Special:Search',
+                 'advert': ' - .*',
+                 'error': 'Search results',
+                 },
+             },
+         'finalfantasywiki': {
+             'keys': ['ffw'],
+             'baseurl': 'http://finalfantasy.wikia.com/',
+             'kwargs': {
+                 'random': '/wiki/Special:Random',
+                 'search': '/wiki/Special:Search',
+                 'advert': ' - .*',
+                 'error': 'Search results',
+                 },
+             },
+         'dragonquestwiki': {
+             'keys': ['dqw'],
+             'baseurl': 'http://dragonquest.wikia.com/',
+             'kwargs': {
+                 'random': '/wiki/Special:Random',
+                 'search': '/wiki/Special:Search',
+                 'advert': ' - .*',
+                 'error': 'Search results',
+                 },
+             },
          'starcraftwiki': {
              'keys': ['scw'],
              'baseurl': 'http://starcraft.wikia.com/',
